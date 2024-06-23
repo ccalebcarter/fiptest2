@@ -37,8 +37,8 @@ class _HexagonalBoardState extends State<HexagonalBoard>
     with TickerProviderStateMixin {
   static const int rows = 5;
   static const int cols = 5;
-  static const double hexSize = 140.0;
   static const Color darkGreen = Color(0xFF006400);
+  late double hexSize;
   late List<List<PlotState>> board;
   Offset? robotPosition;
   late AnimationController _controller;
@@ -200,6 +200,11 @@ class _HexagonalBoardState extends State<HexagonalBoard>
 
   @override
   Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    hexSize = (screenSize.width * 0.8) / ((cols * 1.5 + 0.5) * 1.2);
+    final boardWidth = (cols * 1.5 + 0.5) * hexSize;
+    final boardHeight = (rows * sqrt(3) + 1) * hexSize;
+
     return Scaffold(
       backgroundColor: const Color(0xFFE0EAD8),
       appBar: AppBar(
@@ -208,87 +213,83 @@ class _HexagonalBoardState extends State<HexagonalBoard>
         title: Text(
           'Farming in Purria',
           style: GoogleFonts.dancingScript(
-            fontSize: 70,
+            fontSize: 32,
             fontWeight: FontWeight.bold,
             color: darkGreen,
           ),
         ),
         centerTitle: true,
       ),
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Text(
-                'Instructions:',
-                style: GoogleFonts.dancingScript(
-                  fontSize: 36,
-                  fontWeight: FontWeight.bold,
-                  color: darkGreen,
-                ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Text(
+              'Instructions:',
+              style: GoogleFonts.dancingScript(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: darkGreen,
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Text(
-                '1. Tap on hexagons to plant tulips (green)\n'
-                '2. Press the water drop button to start watering\n'
-                '3. Watch the spider water the planted tulips (blue)\n'
-                '4. Use the refresh button to reset the game',
-                style: TextStyle(fontSize: 24, color: darkGreen),
-              ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: Text(
+              '1. Tap hexagons to plant tulips (green)\n'
+              '2. Press water drop to start watering\n'
+              '3. Spider waters planted tulips (blue)\n'
+              '4. Refresh button resets the game',
+              style: TextStyle(fontSize: 14, color: darkGreen),
             ),
-            const SizedBox(height: 20),
-            Center(
-              child: CustomPaint(
-                painter: OrganicBoxPainter(),
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: SizedBox(
-                    width: (cols * 1.5 + 0.5) * hexSize,
-                    height: (rows * sqrt(3) + 1) * hexSize,
-                    child: Stack(
-                      children: [
-                        ...List.generate(
-                            rows,
-                            (row) => List.generate(
-                                cols,
-                                (col) => Positioned(
-                                      left: col * 1.5 * hexSize,
-                                      top: (row * sqrt(3) +
-                                              (col % 2 == 1
-                                                  ? sqrt(3) / 2
-                                                  : 0)) *
-                                          hexSize,
-                                      child: GestureDetector(
-                                        onTap: () => plantTulip(row, col),
-                                        child: HexagonTile(
-                                          size: hexSize,
-                                          color: _getColorForState(
-                                              board[row][col]),
-                                        ),
+          ),
+          const SizedBox(height: 10),
+          Expanded(
+            child: Center(
+              child: SizedBox(
+                width: boardWidth,
+                height: boardHeight,
+                child: CustomPaint(
+                  painter: OrganicBoxPainter(),
+                  child: Stack(
+                    children: [
+                      ...List.generate(
+                          rows,
+                          (row) => List.generate(
+                              cols,
+                              (col) => Positioned(
+                                    left: (col * 1.5 + 0.5) * hexSize,
+                                    top: (row * sqrt(3) +
+                                            (col % 2 == 1 ? sqrt(3) / 2 : 0) +
+                                            0.5) *
+                                        hexSize,
+                                    child: GestureDetector(
+                                      onTap: () => plantTulip(row, col),
+                                      child: HexagonTile(
+                                        size: hexSize,
+                                        color:
+                                            _getColorForState(board[row][col]),
                                       ),
-                                    ))).expand((element) => element),
-                        if (robotPosition != null)
-                          Positioned(
-                            left: robotPosition!.dx - hexSize / 2,
-                            top: robotPosition!.dy - hexSize / 2,
-                            child: RobotWidget(size: hexSize),
-                          ),
-                      ],
-                    ),
+                                    ),
+                                  ))).expand((element) => element),
+                      if (robotPosition != null)
+                        Positioned(
+                          left: robotPosition!.dx - hexSize / 2,
+                          top: robotPosition!.dy - hexSize / 2,
+                          child: RobotWidget(size: hexSize),
+                        ),
+                    ],
                   ),
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child:
-                  Text('Debug: $debugInfo', style: TextStyle(color: darkGreen)),
-            ),
-          ],
-        ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child:
+                Text('Debug: $debugInfo', style: TextStyle(color: darkGreen)),
+          ),
+        ],
       ),
       floatingActionButton: Column(
         mainAxisAlignment: MainAxisAlignment.end,
@@ -325,7 +326,7 @@ class OrganicBoxPainter extends CustomPainter {
     final paint = Paint()
       ..color = Colors.brown.withOpacity(0.2)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 15
+      ..strokeWidth = 5
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
@@ -333,8 +334,8 @@ class OrganicBoxPainter extends CustomPainter {
     final rng = Random();
 
     void addPoint(double x, double y) {
-      x += (rng.nextDouble() - 0.5) * 20;
-      y += (rng.nextDouble() - 0.5) * 20;
+      x += (rng.nextDouble() - 0.5) * size.width * 0.02;
+      y += (rng.nextDouble() - 0.5) * size.height * 0.02;
       if (path.getBounds().isEmpty) {
         path.moveTo(x, y);
       } else {
@@ -342,10 +343,10 @@ class OrganicBoxPainter extends CustomPainter {
       }
     }
 
-    addPoint(0, 0);
-    addPoint(size.width, 0);
-    addPoint(size.width, size.height);
-    addPoint(0, size.height);
+    addPoint(size.width * 0.05, size.height * 0.05);
+    addPoint(size.width * 0.95, size.height * 0.05);
+    addPoint(size.width * 0.95, size.height * 0.95);
+    addPoint(size.width * 0.05, size.height * 0.95);
     path.close();
 
     canvas.drawPath(path, paint);

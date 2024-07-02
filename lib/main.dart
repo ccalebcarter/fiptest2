@@ -4,6 +4,16 @@ import 'package:google_fonts/google_fonts.dart';
 
 enum PlotState { empty, planted, watered }
 
+enum SimulinType { water, fertilizer, seeding, harvesting, pestDisease }
+
+class Simulin {
+  final String name;
+  final SimulinType type;
+  bool isAssigned;
+
+  Simulin({required this.name, required this.type, this.isAssigned = false});
+}
+
 void main() {
   runApp(const MyApp());
 }
@@ -40,40 +50,43 @@ class _HexagonalBoardState extends State<HexagonalBoard>
   static const Color darkGreen = Color(0xFF006400);
   late double hexSize;
   late List<List<PlotState>> board;
-  Offset? robotPosition;
-  late AnimationController _controller;
-  int currentRow = 0;
-  int currentCol = 0;
+  late List<List<List<SimulinType>>> treatedBy;
+  List<Offset?> robotPositions = [];
+  late List<AnimationController> _controllers;
   bool isWatering = false;
   int wateredPlants = 0;
-  int score = 0;
+  Map<SimulinType, int> score = {for (var type in SimulinType.values) type: 0};
   String debugInfo = '';
+  List<Simulin> availableSimulins = [
+    Simulin(name: "WaterBot 1", type: SimulinType.water),
+    Simulin(name: "WaterBot 2", type: SimulinType.water),
+    Simulin(name: "FertilizerBot", type: SimulinType.fertilizer),
+    Simulin(name: "SeederBot", type: SimulinType.seeding),
+    Simulin(name: "HarvesterBot", type: SimulinType.harvesting),
+    Simulin(name: "PestControlBot", type: SimulinType.pestDisease),
+  ];
+  List<Simulin> assignedSimulins = [];
+  List<List<Offset>> simulinPaths = [];
 
   @override
   void initState() {
     super.initState();
     resetBoard();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    );
-    _controller.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        waterCurrentPlot();
-        moveToNextPlot();
-      }
-    });
   }
 
   void resetBoard() {
     board =
         List.generate(rows, (_) => List.generate(cols, (_) => PlotState.empty));
+    treatedBy = List.generate(rows, (_) => List.generate(cols, (_) => []));
     wateredPlants = 0;
-    score = 0;
+    score = {for (var type in SimulinType.values) type: 0};
     isWatering = false;
-    robotPosition = null;
-    currentRow = 0;
-    currentCol = 0;
+    robotPositions = [];
+    _controllers = [];
+    assignedSimulins = [];
+    for (var simulin in availableSimulins) {
+      simulin.isAssigned = false;
+    }
     debugInfo = 'Board reset';
     setState(() {});
   }
@@ -89,90 +102,207 @@ class _HexagonalBoardState extends State<HexagonalBoard>
     });
   }
 
+  void showSimulinAssignmentCard() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setState) {
+            return AlertDialog(
+              title: Text('Assign Simulins',
+                  style: GoogleFonts.dancingScript(fontSize: 24)),
+              content: SimulinAssignmentCard(
+                availableSimulins: availableSimulins,
+                onAssign: (List<Simulin> selected) {
+                  setState(() {
+                    assignedSimulins = selected;
+                  });
+                },
+              ),
+              actions: <Widget>[
+                TextButton(
+                  child: Text('Cancel'),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                ),
+                TextButton(
+                  child: Text('Start Watering'),
+                  onPressed: assignedSimulins.length == 3
+                      ? () {
+                          Navigator.of(context).pop();
+                          startWatering();
+                        }
+                      : null,
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   void startWatering() {
+    List<Offset> plantedPlots = [];
+    for (int row = 0; row < rows; row++) {
+      for (int col = 0; col < cols; col++) {
+        if (board[row][col] == PlotState.planted) {
+          plantedPlots.add(_getHexagonCenter(row, col));
+        }
+      }
+    }
+
+    if (plantedPlots.isEmpty) {
+      showNoPlantedPlotsDialog();
+      return;
+    }
+
     setState(() {
-      currentRow = 0;
-      currentCol = -1;
+      robotPositions =
+          List.generate(assignedSimulins.length, (_) => plantedPlots.first);
+      simulinPaths = List.generate(
+          assignedSimulins.length, (_) => List.from(plantedPlots));
+      _controllers = List.generate(
+        assignedSimulins.length,
+        (index) => AnimationController(
+          duration: Duration(milliseconds: 500 * plantedPlots.length),
+          vsync: this,
+        )
+          ..addListener(() {
+            setState(() {
+              double animationValue = _controllers[index].value;
+              int currentSegment =
+                  (animationValue * (plantedPlots.length - 1)).floor();
+              double segmentProgress =
+                  (animationValue * (plantedPlots.length - 1)) - currentSegment;
+
+              if (currentSegment < plantedPlots.length - 1) {
+                robotPositions[index] = Offset.lerp(
+                  plantedPlots[currentSegment],
+                  plantedPlots[currentSegment + 1],
+                  segmentProgress,
+                );
+              } else {
+                robotPositions[index] = plantedPlots.last;
+              }
+            });
+          })
+          ..addStatusListener((status) {
+            if (status == AnimationStatus.completed) {
+              waterAllPlots(index);
+              if (_controllers.every((controller) => controller.isCompleted)) {
+                finishWatering();
+              }
+            }
+          }),
+      );
       isWatering = true;
       wateredPlants = 0;
+      score = {for (var type in SimulinType.values) type: 0};
       debugInfo = 'Started watering';
     });
-    moveToNextPlot();
-  }
 
-  void waterCurrentPlot() {
-    setState(() {
-      if (board[currentRow][currentCol] == PlotState.planted) {
-        board[currentRow][currentCol] = PlotState.watered;
-        wateredPlants++;
-        score++;
-        debugInfo = 'Watered plot at ($currentRow, $currentCol)';
-      } else {
-        debugInfo =
-            'Skipped plot at ($currentRow, $currentCol). State: ${board[currentRow][currentCol]}';
-      }
-    });
-  }
-
-  void moveToNextPlot() {
-    if (findNextPlantedPlot()) {
-      final start = robotPosition ?? _getHexagonCenter(currentRow, currentCol);
-      final end = _getHexagonCenter(currentRow, currentCol);
-
-      _controller.reset();
-      _controller.forward();
-
-      _controller.addListener(() {
-        setState(() {
-          robotPosition = Offset.lerp(start, end, _controller.value);
-        });
-      });
-      debugInfo = 'Moving to ($currentRow, $currentCol)';
-    } else {
-      finishWatering();
+    // Start all animations simultaneously
+    for (var controller in _controllers) {
+      controller.forward();
     }
   }
 
-  bool findNextPlantedPlot() {
-    int startRow = currentRow;
-    int startCol = currentCol;
-    do {
-      currentCol++;
-      if (currentCol >= cols) {
-        currentCol = 0;
-        currentRow++;
-        if (currentRow >= rows) {
-          currentRow = 0;
+  void waterAllPlots(int simulinIndex) {
+    int treatedPlots = 0;
+    for (int row = 0; row < rows; row++) {
+      for (int col = 0; col < cols; col++) {
+        if (board[row][col] == PlotState.planted ||
+            board[row][col] == PlotState.watered) {
+          board[row][col] = PlotState.watered;
+          if (!treatedBy[row][col]
+              .contains(assignedSimulins[simulinIndex].type)) {
+            treatedBy[row][col].add(assignedSimulins[simulinIndex].type);
+            treatedPlots++;
+          }
+          debugInfo =
+              'Watered plot at ($row, $col) with simulin ${assignedSimulins[simulinIndex].name}';
         }
       }
-      if (board[currentRow][currentCol] == PlotState.planted) {
-        debugInfo = 'Found next planted plot at ($currentRow, $currentCol)';
-        return true;
-      }
-    } while (currentRow != startRow || currentCol != startCol);
-    debugInfo = 'No more planted plots found';
-    return false;
+    }
+    score[assignedSimulins[simulinIndex].type] = treatedPlots;
+    wateredPlants = treatedPlots;
+    setState(() {});
+  }
+
+  void showNoPlantedPlotsDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('No Planted Tulips',
+              style: GoogleFonts.dancingScript(fontSize: 24)),
+          content: Text(
+              'There are no planted tulips to water. Please plant some tulips first.'),
+          actions: <Widget>[
+            TextButton(
+              child: Text('Reset Game'),
+              onPressed: () {
+                Navigator.of(context).pop();
+                resetBoard();
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void finishWatering() {
     setState(() {
       isWatering = false;
-      robotPosition = null;
+      robotPositions = [];
+      for (var simulin in availableSimulins) {
+        simulin.isAssigned = false;
+      }
       debugInfo = 'Finished watering';
     });
+    showScoreCard();
+  }
+
+  void showScoreCard() {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
           title: Text('Watering Complete',
-              style: GoogleFonts.dancingScript(fontSize: 24)),
-          content:
-              Text('The robot has finished watering $wateredPlants plants!'),
+              style: GoogleFonts.dancingScript(fontSize: 72)),
+          content: Container(
+            width: MediaQuery.of(context).size.width * 0.8,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                    'The simulins have finished watering $wateredPlants plants!',
+                    style: TextStyle(fontSize: 24)),
+                SizedBox(height: 30),
+                ...assignedSimulins.map((simulin) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          SimulinIcon(type: simulin.type, size: 72),
+                          Text('${score[simulin.type]} plots',
+                              style: TextStyle(fontSize: 36)),
+                        ],
+                      ),
+                    )),
+              ],
+            ),
+          ),
           actions: <Widget>[
             TextButton(
-              child: const Text('OK'),
+              child: const Text('OK', style: TextStyle(fontSize: 24)),
               onPressed: () {
                 Navigator.of(context).pop();
+                resetBoard();
               },
             ),
           ],
@@ -213,12 +343,13 @@ class _HexagonalBoardState extends State<HexagonalBoard>
         title: Text(
           'Farming in Purria',
           style: GoogleFonts.dancingScript(
-            fontSize: 32,
+            fontSize: 48,
             fontWeight: FontWeight.bold,
             color: darkGreen,
           ),
         ),
         centerTitle: true,
+        toolbarHeight: 80,
       ),
       body: Column(
         children: [
@@ -226,7 +357,7 @@ class _HexagonalBoardState extends State<HexagonalBoard>
             padding: const EdgeInsets.all(8.0),
             child: Text(
               'Instructions:',
-              style: GoogleFonts.dancingScript(
+              style: GoogleFonts.roboto(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
                 color: darkGreen,
@@ -234,13 +365,18 @@ class _HexagonalBoardState extends State<HexagonalBoard>
             ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Text(
               '1. Tap hexagons to plant tulips (green)\n'
-              '2. Press water drop to start watering\n'
-              '3. Spider waters planted tulips (blue)\n'
-              '4. Refresh button resets the game',
-              style: TextStyle(fontSize: 14, color: darkGreen),
+              '2. Press water drop to assign simulins\n'
+              '3. Assign 3 simulins to start watering\n'
+              '4. Simulins water planted tulips (blue)\n'
+              '5. Refresh button resets the game',
+              style: GoogleFonts.roboto(
+                fontSize: 16,
+                color: darkGreen,
+                height: 1.5,
+              ),
             ),
           ),
           const SizedBox(height: 10),
@@ -249,36 +385,49 @@ class _HexagonalBoardState extends State<HexagonalBoard>
               child: SizedBox(
                 width: boardWidth,
                 height: boardHeight,
-                child: CustomPaint(
-                  painter: OrganicBoxPainter(),
-                  child: Stack(
-                    children: [
-                      ...List.generate(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: OrganicBoxPainter(),
+                    child: Stack(
+                      children: [
+                        ...List.generate(
                           rows,
                           (row) => List.generate(
-                              cols,
-                              (col) => Positioned(
-                                    left: (col * 1.5 + 0.5) * hexSize,
-                                    top: (row * sqrt(3) +
-                                            (col % 2 == 1 ? sqrt(3) / 2 : 0) +
-                                            0.5) *
-                                        hexSize,
-                                    child: GestureDetector(
-                                      onTap: () => plantTulip(row, col),
-                                      child: HexagonTile(
-                                        size: hexSize,
-                                        color:
-                                            _getColorForState(board[row][col]),
-                                      ),
-                                    ),
-                                  ))).expand((element) => element),
-                      if (robotPosition != null)
-                        Positioned(
-                          left: robotPosition!.dx - hexSize / 2,
-                          top: robotPosition!.dy - hexSize / 2,
-                          child: RobotWidget(size: hexSize),
-                        ),
-                    ],
+                            cols,
+                            (col) => Positioned(
+                              left: (col * 1.5 + 0.5) * hexSize,
+                              top: (row * sqrt(3) +
+                                      (col % 2 == 1 ? sqrt(3) / 2 : 0) +
+                                      0.5) *
+                                  hexSize,
+                              child: GestureDetector(
+                                onTap: () => plantTulip(row, col),
+                                child: HexagonTile(
+                                  size: hexSize,
+                                  color: _getColorForState(board[row][col]),
+                                  state: board[row][col],
+                                  treatedBy: treatedBy[row][col],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ).expand((element) => element),
+                        ...robotPositions.asMap().entries.map((entry) {
+                          final index = entry.key;
+                          final position = entry.value;
+                          return position != null
+                              ? Positioned(
+                                  left: position.dx - hexSize / 2,
+                                  top: position.dy - hexSize / 2,
+                                  child: SimulinWidget(
+                                    size: hexSize,
+                                    simulin: assignedSimulins[index],
+                                  ),
+                                )
+                              : const SizedBox.shrink();
+                        }),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -296,8 +445,8 @@ class _HexagonalBoardState extends State<HexagonalBoard>
         children: [
           if (!isWatering)
             FloatingActionButton(
-              onPressed: startWatering,
-              tooltip: 'Start Watering',
+              onPressed: showSimulinAssignmentCard,
+              tooltip: 'Assign Simulins',
               backgroundColor: Colors.lightBlue,
               child: const Icon(Icons.water_drop),
             ),
@@ -315,41 +464,238 @@ class _HexagonalBoardState extends State<HexagonalBoard>
 
   @override
   void dispose() {
-    _controller.dispose();
+    for (var controller in _controllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 }
 
+class SimulinAssignmentCard extends StatefulWidget {
+  final List<Simulin> availableSimulins;
+  final Function(List<Simulin>) onAssign;
+
+  const SimulinAssignmentCard({
+    Key? key,
+    required this.availableSimulins,
+    required this.onAssign,
+  }) : super(key: key);
+
+  @override
+  _SimulinAssignmentCardState createState() => _SimulinAssignmentCardState();
+}
+
+class _SimulinAssignmentCardState extends State<SimulinAssignmentCard> {
+  List<Simulin?> assignedSimulins = List.filled(3, null);
+  Simulin? selectedSimulin;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: List.generate(3, (index) {
+            return SimulinCircle(simulin: assignedSimulins[index]);
+          }),
+        ),
+        SizedBox(height: 20),
+        DropdownButton<Simulin>(
+          hint: Text('Select a Simulin'),
+          value: selectedSimulin,
+          onChanged: (Simulin? newValue) {
+            setState(() {
+              selectedSimulin = newValue;
+            });
+          },
+          items: widget.availableSimulins
+              .where((simulin) => !assignedSimulins.contains(simulin))
+              .map<DropdownMenuItem<Simulin>>((Simulin simulin) {
+            return DropdownMenuItem<Simulin>(
+              value: simulin,
+              child: Text(simulin.name),
+            );
+          }).toList(),
+        ),
+        ElevatedButton(
+          child: Text('Assign'),
+          onPressed: selectedSimulin != null
+              ? () {
+                  setState(() {
+                    int emptyIndex = assignedSimulins.indexOf(null);
+                    if (emptyIndex != -1) {
+                      assignedSimulins[emptyIndex] = selectedSimulin;
+                      selectedSimulin = null;
+                      widget.onAssign(
+                          assignedSimulins.whereType<Simulin>().toList());
+                    }
+                  });
+                }
+              : null,
+        ),
+      ],
+    );
+  }
+}
+
+class SimulinCircle extends StatelessWidget {
+  final Simulin? simulin;
+
+  const SimulinCircle({Key? key, this.simulin}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 60,
+      height: 60,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.grey),
+        color: simulin != null ? Colors.white : Colors.grey.shade200,
+      ),
+      child: simulin != null
+          ? Center(
+              child: SimulinIcon(type: simulin!.type, size: 40),
+            )
+          : null,
+    );
+  }
+}
+
+class SimulinIcon extends StatelessWidget {
+  final SimulinType type;
+  final double size;
+
+  const SimulinIcon({Key? key, required this.type, required this.size})
+      : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    IconData iconData;
+    Color color;
+
+    switch (type) {
+      case SimulinType.water:
+        iconData = Icons.water_drop;
+        color = Colors.blue;
+        break;
+      case SimulinType.fertilizer:
+        iconData = Icons.eco;
+        color = Colors.green;
+        break;
+      case SimulinType.seeding:
+        iconData = Icons.grass;
+        color = Colors.brown;
+        break;
+      case SimulinType.harvesting:
+        iconData = Icons.agriculture;
+        color = Colors.orange;
+        break;
+      case SimulinType.pestDisease:
+        iconData = Icons.bug_report;
+        color = Colors.red;
+        break;
+    }
+
+    return Icon(
+      iconData,
+      size: size,
+      color: color,
+    );
+  }
+}
+
+class SimulinWidget extends StatelessWidget {
+  final double size;
+  final Simulin simulin;
+
+  const SimulinWidget({super.key, required this.size, required this.simulin});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.black, width: 2),
+      ),
+      child: Center(
+        child: SimulinIcon(type: simulin.type, size: size * 0.6),
+      ),
+    );
+  }
+}
+
 class OrganicBoxPainter extends CustomPainter {
+  final Random _rng = Random(42); // Fixed seed for consistency
+
   @override
   void paint(Canvas canvas, Size size) {
+    // Draw background
+    final backgroundPaint = Paint()
+      ..color = Colors.brown[200]! // Light brown background
+      ..style = PaintingStyle.fill;
+
+    canvas.drawRect(
+        Rect.fromLTWH(0, 0, size.width, size.height), backgroundPaint);
+
+    // Draw border
     final paint = Paint()
-      ..color = Colors.brown.withOpacity(0.2)
+      ..color = Colors.brown.withOpacity(0.5)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 5
+      ..strokeWidth = 3
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
     final path = Path();
-    final rng = Random();
+    final rect = Rect.fromLTWH(size.width * 0.05, size.height * 0.05,
+        size.width * 0.9, size.height * 0.98 // Extended to 98% of height
+        );
 
-    void addPoint(double x, double y) {
-      x += (rng.nextDouble() - 0.5) * size.width * 0.02;
-      y += (rng.nextDouble() - 0.5) * size.height * 0.02;
-      if (path.getBounds().isEmpty) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
-      }
-    }
+    path.moveTo(rect.left, rect.top);
 
-    addPoint(size.width * 0.05, size.height * 0.05);
-    addPoint(size.width * 0.95, size.height * 0.05);
-    addPoint(size.width * 0.95, size.height * 0.95);
-    addPoint(size.width * 0.05, size.height * 0.95);
-    path.close();
+    // Top side
+    _drawOrganicLine(path, rect.topLeft, rect.topRight);
+
+    // Right side
+    _drawOrganicLine(path, rect.topRight, rect.bottomRight);
+
+    // Bottom side
+    _drawOrganicLine(path, rect.bottomRight, rect.bottomLeft);
+
+    // Left side
+    _drawOrganicLine(path, rect.bottomLeft, rect.topLeft);
 
     canvas.drawPath(path, paint);
+  }
+
+  void _drawOrganicLine(Path path, Offset start, Offset end) {
+    final length = (end - start).distance;
+    final numSegments =
+        (length / 20).round(); // One control point every ~20 pixels
+
+    for (int i = 0; i < numSegments; i++) {
+      final t = (i + 1) / numSegments;
+      final point = Offset.lerp(start, end, t)!;
+
+      final normalX = -(end.dy - start.dy) / length;
+      final normalY = (end.dx - start.dx) / length;
+
+      final offset =
+          (_rng.nextDouble() - 0.5) * 10; // Random offset between -5 and 5
+      final controlPoint =
+          Offset(point.dx + normalX * offset, point.dy + normalY * offset);
+
+      if (i == 0) {
+        path.quadraticBezierTo(
+            controlPoint.dx, controlPoint.dy, point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
   }
 
   @override
@@ -359,14 +705,35 @@ class OrganicBoxPainter extends CustomPainter {
 class HexagonTile extends StatelessWidget {
   final double size;
   final Color color;
+  final PlotState state;
+  final List<SimulinType> treatedBy;
 
-  const HexagonTile({super.key, required this.size, required this.color});
+  const HexagonTile({
+    super.key,
+    required this.size,
+    required this.color,
+    required this.state,
+    required this.treatedBy,
+  });
 
   @override
   Widget build(BuildContext context) {
     return CustomPaint(
       size: Size(size, size * sqrt(3)),
       painter: HexagonPainter(color: color),
+      child: state == PlotState.watered
+          ? Stack(
+              children: treatedBy.asMap().entries.map((entry) {
+                final index = entry.key;
+                final type = entry.value;
+                return Positioned(
+                  left: size * 0.2 + index * size * 0.2,
+                  top: size * 0.3,
+                  child: SimulinIcon(type: type, size: size * 0.4),
+                );
+              }).toList(),
+            )
+          : null,
     );
   }
 }
@@ -410,25 +777,4 @@ class HexagonPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
-}
-
-class RobotWidget extends StatelessWidget {
-  final double size;
-
-  const RobotWidget({super.key, required this.size});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: const BoxDecoration(
-        color: Colors.grey,
-        shape: BoxShape.circle,
-      ),
-      child: Center(
-        child: Text('🕷️', style: TextStyle(fontSize: size * 0.6)),
-      ),
-    );
-  }
 }
